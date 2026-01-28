@@ -1,27 +1,45 @@
-# Test cluster - patches base config with slower consolidation
-# Use this as a template for testing NAP changes before rolling to prod
+# Test cluster - JSON Patch method for surgical changes
+# This approach is cleaner for specific field overrides
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
-# Start with the base config
 resources:
   - ../../../infrastructure/nap/base
 
-# Apply cluster-specific patches
 patches:
-  # Slow down consolidation for testing
-  - path: patches/nodepool-slow-consolidation.yaml
-    target:
+  # NodePool disruption settings - JSON Patch
+  - target:
       kind: NodePool
       name: default
-  
-  # Add test-specific tags
-  - path: patches/aksnodeclass-test-tags.yaml
-    target:
+    patch: |-
+      - op: replace
+        path: /spec/disruption/consolidationPolicy
+        value: "WhenEmpty"
+      - op: replace
+        path: /spec/disruption/consolidateAfter
+        value: "10m"
+      - op: replace
+        path: /spec/disruption/budgets
+        value:
+          - nodes: "10%"
+          - nodes: "2"
+          - nodes: "0"
+            schedule: "0 8 * * mon-fri"
+            duration: 10h
+
+  # AKSNodeClass tags - JSON Patch
+  - target:
       kind: AKSNodeClass
       name: default
+    patch: |-
+      - op: replace
+        path: /spec/tags
+        value:
+          ManagedBy: karpenter
+          Environment: test
+          Cluster: test-uksouth
+          Purpose: consolidation-testing
 
-# Add test-specific labels to all resources
 commonLabels:
   environment: test
   cluster: test-uksouth

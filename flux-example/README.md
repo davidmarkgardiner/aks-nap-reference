@@ -1,6 +1,6 @@
 # Flux + Kustomize NAP Configuration Example
 
-This example shows how to manage NAP (Karpenter) configuration across multiple clusters using Flux and Kustomize.
+Manage NAP (Karpenter) configuration across multiple clusters using Flux and Kustomize with JSON Patch.
 
 ## Structure
 
@@ -14,32 +14,67 @@ flux-example/
 │           └── aksnodeclass-default.yaml
 │
 └── clusters/
-    ├── prod-uksouth/                      # 👈 Uses base as-is
-    │   ├── nap/
-    │   │   └── kustomization.yaml
-    │   └── nap-kustomization.yaml         # Flux Kustomization
+    ├── prod-uksouth/                      # Uses base as-is
+    │   └── nap/
+    │       └── kustomization.yaml
     │
-    └── test-uksouth/                      # 👈 Patches base config
-        ├── nap/
-        │   ├── kustomization.yaml
-        │   └── patches/
-        │       ├── nodepool-slow-consolidation.yaml
-        │       └── aksnodeclass-test-tags.yaml
-        └── nap-kustomization.yaml         # Flux Kustomization
+    └── test-uksouth/                      # 👈 JSON Patch overrides
+        └── nap/
+            └── kustomization.yaml
 ```
 
-## How It Works
+## JSON Patch Method
 
-1. **Base config** (`infrastructure/nap/base/`) contains the default NodePool and AKSNodeClass
-2. **Prod cluster** references base directly with no changes
-3. **Test cluster** references base but applies patches to slow down consolidation
+We use JSON Patch (`op: replace`, `op: add`, `op: remove`) for surgical changes. This is cleaner than strategic merge patches for specific field overrides.
+
+### Example: Test Cluster Kustomization
+
+```yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../../infrastructure/nap/base
+
+patches:
+  - target:
+      kind: NodePool
+      name: default
+    patch: |-
+      - op: replace
+        path: /spec/disruption/consolidationPolicy
+        value: "WhenEmpty"
+      - op: replace
+        path: /spec/disruption/consolidateAfter
+        value: "10m"
+      - op: replace
+        path: /spec/disruption/budgets
+        value:
+          - nodes: "10%"
+          - nodes: "2"
+          - nodes: "0"
+            schedule: "0 8 * * mon-fri"
+            duration: 10h
+```
+
+## JSON Patch Operations
+
+| Operation | Use Case | Example |
+|-----------|----------|---------|
+| `replace` | Change existing value | `op: replace` `path: /spec/disruption/consolidateAfter` `value: "10m"` |
+| `add` | Add new field or array item | `op: add` `path: /spec/disruption/budgets/-` `value: {nodes: "0"}` |
+| `remove` | Delete a field | `op: remove` `path: /spec/template/spec/taints` |
+
+### Path Syntax
+
+- `/spec/disruption/consolidateAfter` — nested field
+- `/spec/disruption/budgets/0` — first array item
+- `/spec/disruption/budgets/-` — append to array
 
 ## Test Cluster Changes
 
-The test cluster patch (`nodepool-slow-consolidation.yaml`) makes these changes:
-
-| Setting | Base | Test Cluster |
-|---------|------|--------------|
+| Setting | Base | Test (Patched) |
+|---------|------|----------------|
 | `consolidationPolicy` | `WhenEmptyOrUnderutilized` | `WhenEmpty` |
 | `consolidateAfter` | `1m` | `10m` |
 | `budgets[0].nodes` | `20%` | `10%` |
@@ -47,47 +82,97 @@ The test cluster patch (`nodepool-slow-consolidation.yaml`) makes these changes:
 
 ## Preview Changes
 
-Before applying, preview what Flux will deploy:
-
 ```bash
-# Using Flux CLI
-flux build kustomization nap-config \
-  --path ./clusters/test-uksouth/nap
-
-# Using kustomize directly
+# Build and see final output
 kustomize build clusters/test-uksouth/nap
 
 # Compare prod vs test
 diff <(kustomize build clusters/prod-uksouth/nap) \
      <(kustomize build clusters/test-uksouth/nap)
+
+# Flux CLI preview
+flux build kustomization nap-config --path ./clusters/test-uksouth/nap
 ```
 
-## Apply to Cluster
+## Common Patches
 
-```bash
-# If using Flux GitOps (recommended)
-# Just push to git - Flux will reconcile automatically
+### Slow down consolidation
 
-# Manual apply for testing
-kustomize build clusters/test-uksouth/nap | kubectl apply -f -
+```yaml
+- op: replace
+  path: /spec/disruption/consolidateAfter
+  value: "10m"
+```
+
+### Change to WhenEmpty only
+
+```yaml
+- op: replace
+  path: /spec/disruption/consolidationPolicy
+  value: "WhenEmpty"
+```
+
+### Add business hours protection
+
+```yaml
+- op: add
+  path: /spec/disruption/budgets/-
+  value:
+    nodes: "0"
+    schedule: "0 8 * * mon-fri"
+    duration: 10h
+```
+
+### Disable consolidation entirely
+
+```yaml
+- op: replace
+  path: /spec/disruption/consolidateAfter
+  value: "Never"
+```
+
+### Add do-not-disrupt annotation to NodePool
+
+```yaml
+- op: add
+  path: /spec/template/metadata/annotations
+  value:
+    karpenter.sh/do-not-disrupt: "true"
 ```
 
 ## Adding a New Cluster
 
-1. Copy an existing cluster folder:
+1. Create cluster directory:
    ```bash
-   cp -r clusters/prod-uksouth clusters/new-cluster
+   mkdir -p clusters/new-cluster/nap
    ```
 
-2. Update `kustomization.yaml` with any cluster-specific patches
+2. Create `kustomization.yaml`:
+   ```yaml
+   apiVersion: kustomize.config.k8s.io/v1beta1
+   kind: Kustomization
+   resources:
+     - ../../../infrastructure/nap/base
+   patches:
+     - target:
+         kind: NodePool
+         name: default
+       patch: |-
+         - op: replace
+           path: /spec/disruption/consolidateAfter
+           value: "5m"
+   ```
 
-3. Update `nap-kustomization.yaml` with the correct path
+3. Create Flux Kustomization resource
 
-4. Commit and push - Flux handles the rest
+4. Commit and push — Flux reconciles automatically
 
-## Rollout Strategy
+## Validation
 
-1. Test changes in `test-uksouth` first
-2. Monitor for 24-48 hours
-3. If stable, remove patches from test OR apply same patches to prod
-4. Gradually roll to other clusters
+```bash
+# Validate kustomization syntax
+kustomize build clusters/test-uksouth/nap > /dev/null && echo "Valid"
+
+# Apply dry-run
+kustomize build clusters/test-uksouth/nap | kubectl apply --dry-run=server -f -
+```

@@ -1,0 +1,96 @@
+# GPU NodePool - ML/AI Workloads
+# Uses N-series VMs with NVIDIA GPUs
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: gpu-workloads
+spec:
+  limits:
+    cpu: "200"
+    memory: 400Gi
+  
+  disruption:
+    consolidationPolicy: WhenEmpty  # Don't consolidate GPU nodes aggressively
+    expireAfter: 720h
+  
+  template:
+    metadata:
+      labels:
+        workload-type: gpu
+    spec:
+      nodeClassRef:
+        group: karpenter.azure.com
+        kind: AKSNodeClass
+        name: gpu-nodeclass
+      
+      expireAfter: 720h
+      
+      # GPU workloads only
+      taints:
+        - key: nvidia.com/gpu
+          value: "true"
+          effect: NoSchedule
+      
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: [amd64]
+        - key: kubernetes.io/os
+          operator: In
+          values: [linux]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: [on-demand]
+        # N-series for GPU
+        - key: karpenter.azure.com/sku-family
+          operator: In
+          values: [N]
+        # NVIDIA GPUs
+        - key: karpenter.azure.com/sku-gpu-manufacturer
+          operator: In
+          values: [nvidia]
+        # At least 1 GPU
+        - key: karpenter.azure.com/sku-gpu-count
+          operator: Gt
+          values: ["0"]
+---
+apiVersion: karpenter.azure.com/v1beta1
+kind: AKSNodeClass
+metadata:
+  name: gpu-nodeclass
+spec:
+  imageFamily: Ubuntu2204
+  osDiskSizeGB: 256  # Larger for ML workloads
+  tags:
+    workload-type: gpu
+    cost-center: ml-team
+---
+# Example GPU workload
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gpu-workload
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gpu-app
+  template:
+    metadata:
+      labels:
+        app: gpu-app
+    spec:
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: cuda
+          image: nvidia/cuda:12.0-base
+          resources:
+            limits:
+              nvidia.com/gpu: 1
+            requests:
+              nvidia.com/gpu: 1
+              cpu: "4"
+              memory: "16Gi"

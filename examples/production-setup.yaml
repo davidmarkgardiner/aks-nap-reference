@@ -1,0 +1,183 @@
+# Production NAP Setup
+# Multiple NodePools for different workload types
+# Includes disruption budgets to protect business hours
+---
+# AKSNodeClass for all workloads
+apiVersion: karpenter.azure.com/v1beta1
+kind: AKSNodeClass
+metadata:
+  name: production
+spec:
+  imageFamily: Ubuntu2204
+  osDiskSizeGB: 128
+  maxPods: 110
+  
+  tags:
+    Environment: production
+    ManagedBy: karpenter
+    Team: platform
+  
+  kubelet:
+    cpuManagerPolicy: "static"
+    imageGCHighThresholdPercent: 85
+    imageGCLowThresholdPercent: 80
+    containerLogMaxSize: "100Mi"
+    containerLogMaxFiles: 5
+---
+# Critical workloads - On-demand, no disruption during business hours
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: critical
+spec:
+  weight: 100  # Highest priority
+  
+  limits:
+    cpu: "500"
+    memory: 1000Gi
+  
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 5m
+    expireAfter: 720h
+    budgets:
+      # Never more than 10%
+      - nodes: "10%"
+      # No disruption during UK business hours Mon-Fri
+      - nodes: "0"
+        schedule: "0 8 * * mon-fri"
+        duration: 10h
+  
+  template:
+    metadata:
+      labels:
+        workload-tier: critical
+    spec:
+      nodeClassRef:
+        group: karpenter.azure.com
+        kind: AKSNodeClass
+        name: production
+      
+      expireAfter: 720h
+      terminationGracePeriod: 2h
+      
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: [amd64]
+        - key: kubernetes.io/os
+          operator: In
+          values: [linux]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: [on-demand]
+        - key: karpenter.azure.com/sku-family
+          operator: In
+          values: [D, E]
+        - key: karpenter.azure.com/sku-version
+          operator: In
+          values: ["4", "5"]
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values: [uksouth-1, uksouth-2, uksouth-3]
+---
+# Standard workloads - Mix of spot and on-demand
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: standard
+spec:
+  weight: 50
+  
+  limits:
+    cpu: "1000"
+    memory: 2000Gi
+  
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 2m
+    expireAfter: 336h  # 14 days
+    budgets:
+      - nodes: "30%"
+      # More aggressive at night
+      - nodes: "50%"
+        schedule: "0 22 * * *"
+        duration: 8h
+  
+  template:
+    metadata:
+      labels:
+        workload-tier: standard
+    spec:
+      nodeClassRef:
+        group: karpenter.azure.com
+        kind: AKSNodeClass
+        name: production
+      
+      expireAfter: 336h
+      
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: [amd64]
+        - key: kubernetes.io/os
+          operator: In
+          values: [linux]
+        # Prefer spot, fallback to on-demand
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: [spot, on-demand]
+        - key: karpenter.azure.com/sku-family
+          operator: In
+          values: [D, F]
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values: [uksouth-1, uksouth-2, uksouth-3]
+---
+# Batch/Dev workloads - Spot only, aggressive consolidation
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: batch
+spec:
+  weight: 10  # Lowest priority
+  
+  limits:
+    cpu: "500"
+    memory: 500Gi
+  
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 30s
+    expireAfter: 168h  # 7 days
+  
+  template:
+    metadata:
+      labels:
+        workload-tier: batch
+    spec:
+      nodeClassRef:
+        group: karpenter.azure.com
+        kind: AKSNodeClass
+        name: production
+      
+      expireAfter: 168h
+      
+      taints:
+        - key: workload-tier
+          value: batch
+          effect: NoSchedule
+      
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: [amd64, arm64]
+        - key: kubernetes.io/os
+          operator: In
+          values: [linux]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: [spot]
+        - key: karpenter.azure.com/sku-family
+          operator: In
+          values: [D, F, E]

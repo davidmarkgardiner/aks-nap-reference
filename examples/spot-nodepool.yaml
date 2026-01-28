@@ -1,0 +1,89 @@
+# Spot NodePool - Cost-Optimized Interruptible Workloads
+# Uses Spot instances for significant cost savings (up to 90%)
+# Best for: batch jobs, dev/test, stateless workloads
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: spot-workloads
+spec:
+  weight: 100  # Prefer spot over on-demand
+  
+  limits:
+    cpu: "500"
+    memory: 500Gi
+  
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 30s  # Aggressive consolidation for spot
+  
+  template:
+    metadata:
+      labels:
+        capacity-type: spot
+    spec:
+      nodeClassRef:
+        group: karpenter.azure.com
+        kind: AKSNodeClass
+        name: default
+      
+      expireAfter: 168h  # 7 days - shorter for spot
+      
+      # Taint so only tolerating pods schedule here
+      taints:
+        - key: kubernetes.azure.com/scalesetpriority
+          value: spot
+          effect: NoSchedule
+      
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: [amd64]
+        - key: kubernetes.io/os
+          operator: In
+          values: [linux]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: [spot]
+        # Wide range of families for spot availability
+        - key: karpenter.azure.com/sku-family
+          operator: In
+          values: [D, F, E]
+        - key: karpenter.azure.com/sku-version
+          operator: In
+          values: ["3", "4", "5"]
+---
+# Example deployment that tolerates spot
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spot-tolerant-app
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: spot-app
+  template:
+    metadata:
+      labels:
+        app: spot-app
+    spec:
+      tolerations:
+        - key: kubernetes.azure.com/scalesetpriority
+          value: spot
+          effect: NoSchedule
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 1
+              preference:
+                matchExpressions:
+                  - key: karpenter.sh/capacity-type
+                    operator: In
+                    values: [spot]
+      containers:
+        - name: app
+          image: nginx
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"

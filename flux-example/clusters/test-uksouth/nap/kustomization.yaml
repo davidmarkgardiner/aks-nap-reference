@@ -1,0 +1,27 @@
+# Test cluster - patches base config with slower consolidation
+# Use this as a template for testing NAP changes before rolling to prod
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+# Start with the base config
+resources:
+  - ../../../infrastructure/nap/base
+
+# Apply cluster-specific patches
+patches:
+  # Slow down consolidation for testing
+  - path: patches/nodepool-slow-consolidation.yaml
+    target:
+      kind: NodePool
+      name: default
+  
+  # Add test-specific tags
+  - path: patches/aksnodeclass-test-tags.yaml
+    target:
+      kind: AKSNodeClass
+      name: default
+
+# Add test-specific labels to all resources
+commonLabels:
+  environment: test
+  cluster: test-uksouth

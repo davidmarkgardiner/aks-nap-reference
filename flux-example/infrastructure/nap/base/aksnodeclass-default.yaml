@@ -1,0 +1,14 @@
+# Base AKSNodeClass - Source of truth for all clusters
+apiVersion: karpenter.azure.com/v1beta1
+kind: AKSNodeClass
+metadata:
+  name: default
+  namespace: kube-system
+spec:
+  imageFamily: Ubuntu2204
+  osDiskSizeGB: 128
+  maxPods: 110
+  
+  tags:
+    ManagedBy: karpenter
+    Environment: shared

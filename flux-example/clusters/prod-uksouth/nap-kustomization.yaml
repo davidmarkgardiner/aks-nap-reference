@@ -1,0 +1,18 @@
+# Flux Kustomization for prod cluster NAP config
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: nap-config
+  namespace: flux-system
+spec:
+  interval: 10m
+  path: ./clusters/prod-uksouth/nap
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  healthChecks:
+    - apiVersion: karpenter.sh/v1
+      kind: NodePool
+      name: default
+      namespace: kube-system

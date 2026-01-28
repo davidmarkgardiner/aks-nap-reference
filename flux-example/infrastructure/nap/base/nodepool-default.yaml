@@ -1,0 +1,41 @@
+# Base NodePool - Source of truth for all clusters
+# Patch this per-cluster using Kustomize overlays
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: default
+  namespace: kube-system
+spec:
+  # Default disruption settings - can be patched per cluster
+  disruption:
+    consolidationPolicy: WhenEmptyOrUnderutilized
+    consolidateAfter: 1m
+    expireAfter: 720h
+    budgets:
+      - nodes: "20%"
+  
+  template:
+    spec:
+      nodeClassRef:
+        group: karpenter.azure.com
+        kind: AKSNodeClass
+        name: default
+      
+      expireAfter: 720h
+      
+      requirements:
+        - key: kubernetes.io/arch
+          operator: In
+          values: [amd64]
+        - key: kubernetes.io/os
+          operator: In
+          values: [linux]
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: [on-demand]
+        - key: karpenter.azure.com/sku-family
+          operator: In
+          values: [D]
+        - key: karpenter.azure.com/sku-version
+          operator: In
+          values: ["4", "5"]

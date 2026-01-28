@@ -1,0 +1,11 @@
+# Prod cluster - uses base config as-is
+# No patches, just references the base
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../infrastructure/nap/base
+
+# Add prod-specific labels
+commonLabels:
+  environment: production
+  cluster: prod-uksouth

@@ -1,0 +1,39 @@
+# Patch: Slow down consolidation for testing
+# This overrides the base NodePool disruption settings
+#
+# Changes from base:
+# - consolidationPolicy: WhenEmpty (was WhenEmptyOrUnderutilized)
+# - consolidateAfter: 10m (was 1m)
+# - Added business hours protection
+# - More restrictive budgets
+#
+apiVersion: karpenter.sh/v1
+kind: NodePool
+metadata:
+  name: default
+  namespace: kube-system
+spec:
+  disruption:
+    # Only consolidate when nodes are completely empty
+    # This prevents evicting pods from "underutilized" nodes
+    consolidationPolicy: WhenEmpty
+    
+    # Wait 10 minutes before consolidating (was 1m)
+    # Gives workloads time to stabilize
+    consolidateAfter: 10m
+    
+    # Keep same expiration
+    expireAfter: 720h
+    
+    # More restrictive budgets
+    budgets:
+      # Max 10% of nodes disrupted at once (was 20%)
+      - nodes: "10%"
+      
+      # Hard cap at 2 nodes maximum
+      - nodes: "2"
+      
+      # NO disruption during UK business hours Mon-Fri 8am-6pm
+      - nodes: "0"
+        schedule: "0 8 * * mon-fri"
+        duration: 10h

@@ -1,6 +1,6 @@
 # Flux + Kustomize NAP Configuration Example
 
-Manage NAP (Karpenter) configuration across multiple clusters using Flux and Kustomize with JSON Patch.
+Manage NAP (Karpenter) configuration across multiple clusters using Flux and Kustomize with `patchesJson6902`.
 
 ## Structure
 
@@ -18,14 +18,14 @@ flux-example/
     │   └── nap/
     │       └── kustomization.yaml
     │
-    └── test-uksouth/                      # 👈 JSON Patch overrides
+    └── test-uksouth/                      # 👈 patchesJson6902 overrides
         └── nap/
             └── kustomization.yaml
 ```
 
-## JSON Patch Method
+## patchesJson6902 Format
 
-We use JSON Patch (`op: replace`, `op: add`, `op: remove`) for surgical changes. This is cleaner than strategic merge patches for specific field overrides.
+Uses RFC 6902 JSON Patch operations with explicit target specification.
 
 ### Example: Test Cluster Kustomization
 
@@ -36,8 +36,10 @@ kind: Kustomization
 resources:
   - ../../../infrastructure/nap/base
 
-patches:
+patchesJson6902:
   - target:
+      group: karpenter.sh
+      version: v1
       kind: NodePool
       name: default
     patch: |-
@@ -57,19 +59,40 @@ patches:
             duration: 10h
 ```
 
-## JSON Patch Operations
+## Target Specification
+
+```yaml
+target:
+  group: karpenter.sh           # API group
+  version: v1                   # API version
+  kind: NodePool                # Resource kind
+  name: default                 # Resource name
+  namespace: kube-system        # Optional: namespace
+```
+
+### Common Targets
+
+| Resource | group | version | kind |
+|----------|-------|---------|------|
+| NodePool | `karpenter.sh` | `v1` | `NodePool` |
+| AKSNodeClass | `karpenter.azure.com` | `v1beta1` | `AKSNodeClass` |
+
+## JSON Patch Operations (RFC 6902)
 
 | Operation | Use Case | Example |
 |-----------|----------|---------|
-| `replace` | Change existing value | `op: replace` `path: /spec/disruption/consolidateAfter` `value: "10m"` |
-| `add` | Add new field or array item | `op: add` `path: /spec/disruption/budgets/-` `value: {nodes: "0"}` |
-| `remove` | Delete a field | `op: remove` `path: /spec/template/spec/taints` |
+| `replace` | Change existing value | `op: replace` `path: /spec/field` `value: "new"` |
+| `add` | Add new field or array item | `op: add` `path: /spec/new` `value: "val"` |
+| `remove` | Delete a field | `op: remove` `path: /spec/field` |
+| `copy` | Copy value from another path | `op: copy` `from: /spec/a` `path: /spec/b` |
+| `move` | Move value to another path | `op: move` `from: /spec/a` `path: /spec/b` |
+| `test` | Assert value exists | `op: test` `path: /spec/field` `value: "expected"` |
 
 ### Path Syntax
 
 - `/spec/disruption/consolidateAfter` — nested field
-- `/spec/disruption/budgets/0` — first array item
-- `/spec/disruption/budgets/-` — append to array
+- `/spec/disruption/budgets/0` — first array item (index)
+- `/spec/disruption/budgets/-` — append to end of array
 
 ## Test Cluster Changes
 
@@ -80,18 +103,24 @@ patches:
 | `budgets[0].nodes` | `20%` | `10%` |
 | Business hours protection | None | Mon-Fri 8am-6pm |
 
-## Preview Changes
+## Using External Patch Files
 
-```bash
-# Build and see final output
-kustomize build clusters/test-uksouth/nap
+```yaml
+patchesJson6902:
+  - target:
+      group: karpenter.sh
+      version: v1
+      kind: NodePool
+      name: default
+    path: patches/nodepool.json
+```
 
-# Compare prod vs test
-diff <(kustomize build clusters/prod-uksouth/nap) \
-     <(kustomize build clusters/test-uksouth/nap)
-
-# Flux CLI preview
-flux build kustomization nap-config --path ./clusters/test-uksouth/nap
+**`patches/nodepool.json`**
+```json
+[
+  {"op": "replace", "path": "/spec/disruption/consolidateAfter", "value": "10m"},
+  {"op": "replace", "path": "/spec/disruption/consolidationPolicy", "value": "WhenEmpty"}
+]
 ```
 
 ## Common Patches
@@ -112,7 +141,19 @@ flux build kustomization nap-config --path ./clusters/test-uksouth/nap
   value: "WhenEmpty"
 ```
 
-### Add business hours protection
+### Replace entire budgets array
+
+```yaml
+- op: replace
+  path: /spec/disruption/budgets
+  value:
+    - nodes: "10%"
+    - nodes: "0"
+      schedule: "0 8 * * mon-fri"
+      duration: 10h
+```
+
+### Append to existing budgets array
 
 ```yaml
 - op: add
@@ -131,13 +172,31 @@ flux build kustomization nap-config --path ./clusters/test-uksouth/nap
   value: "Never"
 ```
 
-### Add do-not-disrupt annotation to NodePool
+### Add annotation
 
 ```yaml
 - op: add
-  path: /spec/template/metadata/annotations
-  value:
-    karpenter.sh/do-not-disrupt: "true"
+  path: /spec/template/metadata/annotations/karpenter.sh~1do-not-disrupt
+  value: "true"
+```
+
+Note: `/` in keys must be escaped as `~1`
+
+## Preview Changes
+
+```bash
+# Build and see final output
+kustomize build clusters/test-uksouth/nap
+
+# Compare prod vs test
+diff <(kustomize build clusters/prod-uksouth/nap) \
+     <(kustomize build clusters/test-uksouth/nap)
+
+# Validate syntax
+kustomize build clusters/test-uksouth/nap > /dev/null && echo "Valid"
+
+# Dry-run apply
+kustomize build clusters/test-uksouth/nap | kubectl apply --dry-run=server -f -
 ```
 
 ## Adding a New Cluster
@@ -147,14 +206,16 @@ flux build kustomization nap-config --path ./clusters/test-uksouth/nap
    mkdir -p clusters/new-cluster/nap
    ```
 
-2. Create `kustomization.yaml`:
+2. Create `kustomization.yaml` with `patchesJson6902`:
    ```yaml
    apiVersion: kustomize.config.k8s.io/v1beta1
    kind: Kustomization
    resources:
      - ../../../infrastructure/nap/base
-   patches:
+   patchesJson6902:
      - target:
+         group: karpenter.sh
+         version: v1
          kind: NodePool
          name: default
        patch: |-
@@ -166,13 +227,3 @@ flux build kustomization nap-config --path ./clusters/test-uksouth/nap
 3. Create Flux Kustomization resource
 
 4. Commit and push — Flux reconciles automatically
-
-## Validation
-
-```bash
-# Validate kustomization syntax
-kustomize build clusters/test-uksouth/nap > /dev/null && echo "Valid"
-
-# Apply dry-run
-kustomize build clusters/test-uksouth/nap | kubectl apply --dry-run=server -f -
-```

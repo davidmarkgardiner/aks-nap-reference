@@ -1,14 +1,15 @@
-# Test cluster - JSON Patch method for surgical changes
-# This approach is cleaner for specific field overrides
+# Test cluster - patchesJson6902 format for surgical changes
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
   - ../../../infrastructure/nap/base
 
-patches:
-  # NodePool disruption settings - JSON Patch
+patchesJson6902:
+  # NodePool disruption settings
   - target:
+      group: karpenter.sh
+      version: v1
       kind: NodePool
       name: default
     patch: |-
@@ -27,8 +28,10 @@ patches:
             schedule: "0 8 * * mon-fri"
             duration: 10h
 
-  # AKSNodeClass tags - JSON Patch
+  # AKSNodeClass tags
   - target:
+      group: karpenter.azure.com
+      version: v1beta1
       kind: AKSNodeClass
       name: default
     patch: |-

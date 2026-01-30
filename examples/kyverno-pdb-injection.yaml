@@ -1,0 +1,176 @@
+# Kyverno Policy: Auto-inject PodDisruptionBudgets
+# Creates a PDB for every Deployment with replicas > 1
+# Prevents NAP/Karpenter from disrupting too many pods during consolidation
+---
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: inject-pdb
+  annotations:
+    policies.kyverno.io/title: Auto-inject PodDisruptionBudget
+    policies.kyverno.io/category: Availability
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/subject: Deployment, PodDisruptionBudget
+    policies.kyverno.io/description: >-
+      Automatically creates a PodDisruptionBudget for Deployments with
+      more than 1 replica. This prevents NAP/Karpenter node consolidation
+      from disrupting too many pods simultaneously, reducing churn.
+spec:
+  # Don't block deployment if PDB creation fails
+  failurePolicy: Ignore
+  rules:
+    # Rule 1: Generate PDB with minAvailable for standard workloads
+    - name: create-pdb
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+              # Skip system namespaces
+              namespaceSelector:
+                matchExpressions:
+                  - key: kubernetes.io/metadata.name
+                    operator: NotIn
+                    values:
+                      - kube-system
+                      - kube-node-lease
+                      - kube-public
+                      - gatekeeper-system
+                      - kyverno
+      # Only for Deployments with replicas > 1
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.replicas || `1` }}"
+            operator: GreaterThan
+            value: 1
+      generate:
+        apiVersion: policy/v1
+        kind: PodDisruptionBudget
+        name: "{{ request.object.metadata.name }}-pdb"
+        namespace: "{{ request.object.metadata.namespace }}"
+        # Sync keeps PDB in sync with Deployment changes
+        synchronize: true
+        data:
+          metadata:
+            labels:
+              app.kubernetes.io/managed-by: kyverno
+              app.kubernetes.io/created-by: inject-pdb-policy
+            ownerReferences:
+              - apiVersion: apps/v1
+                kind: Deployment
+                name: "{{ request.object.metadata.name }}"
+                uid: "{{ request.object.metadata.uid }}"
+          spec:
+            # Allow disruption of max 1 pod at a time for small deployments
+            # or 20% for larger ones
+            minAvailable: "{{ request.object.spec.replicas > `5` && '80%' || (subtract(request.object.spec.replicas, `1`)) }}"
+            selector:
+              matchLabels:
+                "{{ request.object.spec.selector.matchLabels }}"
+---
+# Alternative: Simpler version with fixed percentage
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: inject-pdb-simple
+  annotations:
+    policies.kyverno.io/title: Auto-inject PDB (Simple)
+    policies.kyverno.io/description: >-
+      Simple version: Creates a PDB allowing max 1 pod unavailable
+      for any Deployment with replicas > 1. Opt-out with label
+      pdb.kyverno.io/inject: "false"
+spec:
+  failurePolicy: Ignore
+  rules:
+    - name: create-pdb
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+              namespaceSelector:
+                matchExpressions:
+                  - key: kubernetes.io/metadata.name
+                    operator: NotIn
+                    values:
+                      - kube-system
+                      - kube-node-lease
+                      - kube-public
+      # Opt-out mechanism
+      exclude:
+        any:
+          - resources:
+              selector:
+                matchLabels:
+                  pdb.kyverno.io/inject: "false"
+      preconditions:
+        all:
+          - key: "{{ request.object.spec.replicas || `1` }}"
+            operator: GreaterThan
+            value: 1
+      generate:
+        apiVersion: policy/v1
+        kind: PodDisruptionBudget
+        name: "{{ request.object.metadata.name }}-pdb"
+        namespace: "{{ request.object.metadata.namespace }}"
+        synchronize: true
+        data:
+          metadata:
+            labels:
+              app.kubernetes.io/managed-by: kyverno
+            ownerReferences:
+              - apiVersion: apps/v1
+                kind: Deployment
+                name: "{{ request.object.metadata.name }}"
+                uid: "{{ request.object.metadata.uid }}"
+          spec:
+            maxUnavailable: 1
+            selector:
+              matchLabels:
+                "{{ request.object.spec.selector.matchLabels }}"
+---
+# Validation: Ensure Deployments with replicas > 2 have resource requests
+# (Missing requests = Karpenter can't calculate utilisation = churn)
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-resource-requests
+  annotations:
+    policies.kyverno.io/title: Require Resource Requests
+    policies.kyverno.io/description: >-
+      Deployments must define CPU and memory requests. Without requests,
+      Karpenter/NAP cannot accurately calculate node utilisation,
+      leading to unnecessary consolidation and node churn.
+spec:
+  validationFailureAction: Audit  # Start with Audit, move to Enforce
+  rules:
+    - name: validate-requests
+      match:
+        any:
+          - resources:
+              kinds:
+                - Deployment
+              namespaceSelector:
+                matchExpressions:
+                  - key: kubernetes.io/metadata.name
+                    operator: NotIn
+                    values:
+                      - kube-system
+                      - kube-node-lease
+                      - kube-public
+      validate:
+        message: >-
+          All containers must have CPU and memory requests defined.
+          Missing resource requests causes NAP/Karpenter to miscalculate
+          node utilisation, leading to node churn.
+        foreach:
+          - list: "request.object.spec.template.spec.containers[]"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.resources.requests.cpu || '' }}"
+                    operator: Equals
+                    value: ""
+                  - key: "{{ element.resources.requests.memory || '' }}"
+                    operator: Equals
+                    value: ""

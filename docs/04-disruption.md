@@ -70,6 +70,40 @@ spec:
         duration: 10m
 ```
 
+### How Budgets Work Together
+
+Budgets are evaluated **in order** and Karpenter picks the **most restrictive** one that applies at any given time.
+
+**Example: 50-node cluster**
+
+| Budget | Calculates To | Effect |
+|--------|--------------|--------|
+| `nodes: "20%"` | 10 nodes | Up to 10 could disrupt |
+| `nodes: "5"` | 5 nodes | Hard cap — overrides the 20% |
+| `nodes: "0"` (scheduled) | 0 nodes | During maintenance window — blocks everything |
+
+**Result:** Max 5 nodes disrupting at once (the `"5"` caps the 20%), zero during the daily window.
+
+**Example: 10-node cluster**
+
+| Budget | Calculates To | Effect |
+|--------|--------------|--------|
+| `nodes: "20%"` | 2 nodes | Up to 2 could disrupt |
+| `nodes: "5"` | 5 nodes | Not restrictive here — 20% already lower |
+| `nodes: "0"` (scheduled) | 0 nodes | During maintenance window — blocks everything |
+
+**Result:** Max 2 nodes disrupting (20% is more restrictive than the cap of 5).
+
+**Key takeaway:** `nodes: "5"` is a **safety net for large clusters** — if you have 100 nodes, 20% = 20 nodes disrupting simultaneously, which could be catastrophic. The absolute cap of 5 prevents that. For smaller clusters (<25 nodes), the percentage is already more restrictive.
+
+#### Budget Types
+
+| Format | Type | Example | Meaning |
+|--------|------|---------|---------|
+| `"20%"` | Percentage | 20% of total nodes | Scales with cluster size |
+| `"5"` | Absolute | Fixed at 5 nodes | Hard ceiling regardless of size |
+| `"0"` | Block | Zero disruptions | Use with schedule for maintenance windows |
+
 ### Schedule-Based Budgets
 
 Prevent disruptions during business hours:
